@@ -90,7 +90,7 @@ class PrepareData:
         def clean_text(text: str) -> str:
             cleaned_words = []
             for word in text.split():
-                word = word.strip('.,!()[]{}":;')
+                word = word.strip('.,!?()[]{}":;')
                 if word:
                     cleaned_words.append(word)
             return ' '.join(cleaned_words)

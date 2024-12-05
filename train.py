@@ -13,7 +13,7 @@ class Trainer:
             model,
             train_loader,
             val_loader,
-            learning_rate=0.0001,  # Reduced from 0.001
+            learning_rate=0.01,
             device='cuda'
     ):
         self.model = model.to(device)

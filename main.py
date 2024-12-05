@@ -17,7 +17,7 @@ def train_specific_model(model_name, model, train_loader, val_loader, embedding_
     )
 
     train_losses, val_losses = trainer.train(
-        num_epochs=10,
+        num_epochs=20,
         save_dir=f'checkpoints/{model_name}'
     )
 
