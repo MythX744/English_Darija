@@ -1,0 +1,13 @@
+Sentence Length Statistics
+--------------------------------------------------
+English:
+  Mean: 5.9
+  Median: 5.0
+  Max: 38
+  Standard Deviation: 3.6
+Darija:
+  Mean: 4.3
+  Median: 4.0
+  Max: 29
+  Standard Deviation: 2.8
+Fixed padding length: 7
