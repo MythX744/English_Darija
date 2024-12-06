@@ -13,7 +13,7 @@ class Trainer:
             model,
             train_loader,
             val_loader,
-            learning_rate=0.01,
+            learning_rate=0.001,
             device='cuda'
     ):
         self.model = model.to(device)
@@ -32,7 +32,6 @@ class Trainer:
             model.parameters(),
             lr=learning_rate,
             weight_decay=0.01,
-            betas=(0.9, 0.98)
         )
 
         # Scheduler that monitors validation loss

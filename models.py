@@ -133,8 +133,8 @@ class TranslationModel(nn.Module):
         # Encode input sequence
         _, encoder_states = self.encoder(src)
 
-        # Initialize decoder with START token
-        decoder_input = torch.tensor([[2]] * batch_size).cuda()  # 2 is START token index
+        # Initialize decoder with START token (index 2 because we the order of special token is pad->unk->start->end)
+        decoder_input = torch.full((batch_size, 1), 2, device=src.device)
         decoder_states = encoder_states
 
         # Generate translation one word at a time
@@ -142,10 +142,12 @@ class TranslationModel(nn.Module):
             prediction, decoder_states = self.decoder(decoder_input, decoder_states)
             outputs[:, t] = prediction
 
-            # Teacher forcing
+            # Teacher forcing : to choose in each time either the prediction or the true output based on the rate chosen
             if t < max_len - 1:
-                use_teacher_forcing = (torch.rand(1).item() < teacher_forcing_ratio) and (trg is not None)
-                decoder_input = trg[:, t:t + 1] if use_teacher_forcing else prediction.argmax(1).unsqueeze(1)
+                if trg is not None and torch.rand(1).item() < teacher_forcing_ratio:
+                    decoder_input = trg[:, t:t+1]
+                else:
+                    decoder_input = prediction.argmax(1).unsqueeze(1)
 
         return outputs
 
@@ -181,7 +183,7 @@ class Peehole(nn.Module):
         batch_size = input_seq.size(0)
         seq_len = input_seq.size(1)
 
-        # Initialize states if not provided
+        # Initialize states
         if states is None:
             h_t = torch.zeros(batch_size, self.hidden_size).to(input_seq.device)
             c_t = torch.zeros(batch_size, self.hidden_size).to(input_seq.device)
@@ -190,7 +192,6 @@ class Peehole(nn.Module):
             h_t = h_t.squeeze(1)
             c_t = c_t.squeeze(1)
 
-        # Process each timestep
         hidden_seq = []
 
         for t in range(seq_len):
@@ -339,14 +340,16 @@ class StackedLSTM(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
 
-    def forward(self, input, hidden):
-        output, hidden = self.lstm(input, hidden)
-        return output, hidden
+    def forward(self, input, states=None):
+        if states is None:
+            batch_size = input.size(0)
+            device = input.device
+            h0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(device)
+            c0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(device)
+            states = (h0, c0)
 
-    def init_hidden(self, batch_size):
-        h0 = torch.zeros(self.num_layers, batch_size, self.hidden_size, device='cuda')
-        c0 = torch.zeros(self.num_layers, batch_size, self.hidden_size, device='cuda')
-        return (h0, c0)
+        output, hidden = self.lstm(input, states)
+        return output, hidden
 
 
 '''

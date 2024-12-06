@@ -12,7 +12,7 @@ def train_specific_model(model_name, model, train_loader, val_loader, embedding_
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        learning_rate=0.0001,
+        learning_rate=0.001,
         device='cuda'
     )
 
@@ -78,12 +78,12 @@ def main():
     )
 
     # Model configurations
-    embedding_dim = 256
+    embedding_dim = 64
     model_configs = {
-        'LSTM': {'hidden_size': 256, 'cell_type': LSTM},
-        'Peehole': {'hidden_size': 256, 'cell_type': Peehole},
-        'WMC': {'hidden_size': 256, 'cell_type': WMC},
-        'Stacked_LSTM': {'hidden_size': 256, 'cell_type': StackedLSTM, 'num_layers': 2}
+        'LSTM': {'hidden_size': 64, 'cell_type': LSTM},
+        'Peehole': {'hidden_size': 64, 'cell_type': Peehole},
+        'WMC': {'hidden_size': 64, 'cell_type': WMC},
+        'Stacked_LSTM': {'hidden_size': 64, 'cell_type': StackedLSTM, 'num_layers': 2}
     }
 
     # Train each model

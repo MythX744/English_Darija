@@ -237,7 +237,7 @@ class PrepareData:
 
 
 class TranslationDataset(torch.utils.data.Dataset):
-    def __init__(self, X, y, word_eng, word_darija, max_len=15):
+    def __init__(self, X, y, word_eng, word_darija, max_len=40):  # Increased max_len
         self.X = X.reset_index(drop=True)
         self.y = y.reset_index(drop=True)
         self.word_eng = word_eng
@@ -253,32 +253,38 @@ class TranslationDataset(torch.utils.data.Dataset):
             idx = idx.tolist()
 
         # Get sentences
-        eng_sentence = str(self.X.iloc[idx])
-        darija_sentence = str(self.y.iloc[idx])
+        eng_sentence = str(self.X.iloc[idx]).lower()
+        darija_sentence = str(self.y.iloc[idx]).lower()
 
-        # Tokenize
-        eng_tokens = eng_sentence.split()
-        darija_tokens = darija_sentence.split()
+        # Tokenize and add special tokens at appropriate positions
+        eng_tokens = ['<START>'] + eng_sentence.split() + ['<END>']
+        darija_tokens = ['<START>'] + darija_sentence.split() + ['<END>']
 
-        # Convert to indices
-        eng_indices = [self.word_eng.get(word.lower(), self.word_eng['<UNK>']) for word in eng_tokens]
-        darija_indices = [self.word_darija.get(word.lower(), self.word_darija['<UNK>']) for word in darija_tokens]
+        # Convert to indices with better unknown token handling
+        eng_indices = []
+        for token in eng_tokens:
+            if token in self.word_eng:
+                eng_indices.append(self.word_eng[token])
+            else:
+                eng_indices.append(self.word_eng['<UNK>'])
 
-        # Add special tokens
-        eng_indices = [self.word_eng['<START>']] + eng_indices + [self.word_eng['<END>']]
-        darija_indices = [self.word_darija['<START>']] + darija_indices + [self.word_darija['<END>']]
+        darija_indices = []
+        for token in darija_tokens:
+            if token in self.word_darija:
+                darija_indices.append(self.word_darija[token])
+            else:
+                darija_indices.append(self.word_darija['<UNK>'])
 
-        # Pad sequences
-        if len(eng_indices) > self.max_len:
-            eng_indices = eng_indices[:self.max_len]
+        # Pad sequences properly
+        if len(eng_indices) < self.max_len:
+            eng_indices.extend([self.word_eng['<PAD>']] * (self.max_len - len(eng_indices)))
         else:
-            eng_indices += [self.word_eng['<PAD>']] * (self.max_len - len(eng_indices))
+            eng_indices = eng_indices[:self.max_len-1] + [self.word_eng['<END>']]
 
-        if len(darija_indices) > self.max_len:
-            darija_indices = darija_indices[:self.max_len]
+        if len(darija_indices) < self.max_len:
+            darija_indices.extend([self.word_darija['<PAD>']] * (self.max_len - len(darija_indices)))
         else:
-            darija_indices += [self.word_darija['<PAD>']] * (self.max_len - len(darija_indices))
+            darija_indices = darija_indices[:self.max_len-1] + [self.word_darija['<END>']]
 
-        # Move tensors to GPU immediately
         return (torch.tensor(eng_indices, dtype=torch.long).to(self.device),
                 torch.tensor(darija_indices, dtype=torch.long).to(self.device))
