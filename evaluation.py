@@ -1,145 +1,143 @@
-from datetime import datetime
-import json
 import torch
-import os
-from models import TranslationModel, LSTM, Peehole, WMC, StackedLSTM
-from prepare_data import PrepareData
+from prepare_data import PrepareData, TranslationDataset
+from models import TranslationModel, WMC, Peehole, LSTM, StackedLSTM
+import re
 
 
-def translate_sentence(model, sentence, word_eng, word_darija, device, max_len=40):
-    model.eval()
+class ModelEvaluator:
+    def __init__(self, checkpoint_dir, device='cuda'):
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.checkpoint_dir = checkpoint_dir
+        self.data_prep = PrepareData()
+        df = self.data_prep.load_and_clean_data(
+            dataset="imomayiz/darija-english",
+            folder="sentences",
+            drop_column="darija_ar",
+            output_csv="darija_english.csv"
+        )
+        df = self.data_prep.clean_punctuation(df)
+        self.word_eng, self.word_darija = self.data_prep.prepare_vocabularies(df)
+        self.models = {}
+        self.load_models()
 
-    # Prepare input
-    tokens = ['<START>'] + sentence.lower().split() + ['<END>']
-    indices = [word_eng.get(token, word_eng['<UNK>']) for token in tokens]
-    if len(indices) < max_len:
-        indices += [word_eng['<PAD>']] * (max_len - len(indices))
-    src_tensor = torch.LongTensor([indices]).to(device)
+    def load_models(self):
+        model_types = {
+            'LSTM': LSTM,
+            'Peehole': Peehole,
+            'WMC': WMC,
+            'Stacked_LSTM': StackedLSTM
+        }
 
-    # Initialize output
-    translation = []
-    with torch.no_grad():
-        encoder_outputs, encoder_states = model.encoder(src_tensor)
-        decoder_input = torch.tensor([[word_darija['<START>']]], device=device)
-        decoder_states = encoder_states
+        for model_name, cell_type in model_types.items():
+            try:
+                checkpoint = torch.load(f'{self.checkpoint_dir}/{model_name}/final_model.pt')
+                model = TranslationModel(
+                    input_vocab_size=len(self.word_eng),
+                    output_vocab_size=len(self.word_darija),
+                    embedding_dim=checkpoint['embedding_dim'],
+                    hidden_size=checkpoint['hidden_size'],
+                    cell_type=cell_type
+                ).to(self.device)
 
-        for _ in range(max_len):
-            prediction, decoder_states = model.decoder(decoder_input, decoder_states)
-            pred_token = prediction.argmax(dim=1).item()
+                model.load_state_dict(checkpoint['model_state_dict'])
+                model.eval()
+                print(f"Loaded {model_name} model successfully")
+                self.models[model_name] = model
+            except Exception as e:
+                print(f"Failed to load {model_name} model: {str(e)}")
 
-            if pred_token == word_darija['<END>']:
-                break
+    def translate_with_model(self, sentence, model, max_length=50):
+        model.eval()
+        with torch.no_grad():
+            # Prepare input sequence
+            eng_tokens = ['<START>'] + sentence.lower().split() + ['<END>']
+            eng_indices = [self.word_eng.get(token, self.word_eng['<UNK>']) for token in eng_tokens]
+            eng_tensor = torch.tensor([eng_indices]).to(self.device)
+            print(f"Input tensor shape: {eng_tensor.shape}")
+            print(f"Input tokens: {eng_tokens}")
 
-            if pred_token not in [word_darija['<PAD>'], word_darija['<UNK>'],
-                                  word_darija['<START>'], word_darija['<END>']]:
-                for word, idx in word_darija.items():
-                    if idx == pred_token:
-                        translation.append(word)
+            # Initialize with START token
+            decoder_input = torch.tensor([[self.word_darija['<START>']]]).to(self.device)
+            decoded_words = []
+            hidden = None
+
+            # Generate sequence
+            for i in range(max_length):
+                # Create batch
+                batch = {
+                    'eng': eng_tensor,
+                    'eng_lengths': torch.tensor([len(eng_indices)]).to(self.device),
+                    'darija': decoder_input
+                }
+
+                try:
+                    # Forward pass through the encoder
+                    encoder_outputs = model.encoder_embedding(batch['eng'])
+                    encoder_output, hidden = model.encoder(encoder_outputs)
+
+                    # Forward pass through the decoder
+                    decoder_embedded = model.decoder_embedding(batch['darija'])
+                    decoder_output, hidden = model.decoder(decoder_embedded, hidden)
+                    output = model.fc(decoder_output)
+
+                    print(f"Step {i}, Output shape: {output.shape}")
+
+                    # Get prediction
+                    next_token = output[:, -1].argmax(dim=-1, keepdim=True)
+
+                    # Stop if END token
+                    if next_token.item() == self.word_darija['<END>']:
+                        print("Generated END token")
                         break
 
-            decoder_input = torch.tensor([[pred_token]], device=device)
+                    # Add token to decoded sequence
+                    for word, idx in self.word_darija.items():
+                        if idx == next_token.item() and word not in ['<START>', '<END>', '<PAD>', '<UNK>']:
+                            decoded_words.append(word)
+                            print(f"Generated word: {word}")
+                            break
 
-    return ' '.join(translation)
+                    # Update decoder input
+                    decoder_input = torch.cat([decoder_input, next_token], dim=1)
+
+                except Exception as e:
+                    print(f"Error during translation: {str(e)}")
+                    break
+
+            return ' '.join(decoded_words) if decoded_words else '<no translation>'
+
+    def evaluate_all_models(self, sentence):
+        results = {}
+        for model_name, model in self.models.items():
+            print(f"\n{'=' * 20} Generating translation with {model_name} {'=' * 20}")
+            try:
+                translation = self.translate_with_model(sentence, model)
+                results[model_name] = translation
+            except Exception as e:
+                print(f"Error with {model_name}: {str(e)}")
+                results[model_name] = '<error>'
+        return results
 
 
-def evaluate_models():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    # Initialize results dictionary
-    results = {
-        "evaluation_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "model_results": {}
-    }
-
-    # Data preparation
-    data_prep = PrepareData()
-    df = data_prep.load_and_clean_data(
-        dataset="imomayiz/darija-english",
-        folder="sentences",
-        drop_column="darija_ar",
-        output_csv="darija_english.csv"
-    )
-    df = data_prep.clean_punctuation(df)
-    word_eng, word_darija = data_prep.prepare_vocabularies(df)
-
-    # Use same dimensions as training
-    embedding_dim = 64
-    model_configs = {
-        'LSTM': {'hidden_size': 64, 'cell_type': LSTM},  # Changed from 64
-        'Peehole': {'hidden_size': 64, 'cell_type': Peehole},
-        'WMC': {'hidden_size': 64, 'cell_type': WMC},
-        'Stacked_LSTM': {
-            'hidden_size': 64,
-            'cell_type': StackedLSTM,
-            'num_layers': 2
-        }
-    }
-
-    test_cases = [
-        ("hello how are you", "salam labas"),
-        ("what is your name", "chno smitk"),
-        ("i love you", "kanbghik"),
-        ("good morning", "sba7 lkhir")
+def main():
+    evaluator = ModelEvaluator('checkpoints')
+    test_sentences = [
+        "how are you?",
+        "what is your name?",
+        "I love you",
+        "thank you very much",
+        "good morning"
     ]
 
-    for model_name, config in model_configs.items():
-        print(f"\nTesting {model_name} model:")
+    print("Translation Results:\n")
+    for sentence in test_sentences:
+        print(f"English: {sentence}")
+        translations = evaluator.evaluate_all_models(sentence)
+        for model_name, translation in translations.items():
+            print(f"  {model_name}: {translation}")
         print("-" * 50)
-
-        # Initialize results for this model
-        results["model_results"][model_name] = {
-            "config": {
-                "embedding_dim": embedding_dim,
-                "hidden_size": config['hidden_size'],
-                "num_layers": config.get('num_layers', 1)
-            },
-            "translations": []
-        }
-
-        # Create model
-        model = TranslationModel(
-            input_vocab_size=len(word_eng),
-            output_vocab_size=len(word_darija),
-            embedding_dim=embedding_dim,
-            hidden_size=config['hidden_size'],
-            cell_type=config['cell_type'],
-            num_layers=config.get('num_layers', 1)
-        ).to(device)
-
-        # Load trained model
-        checkpoint_path = f'checkpoints/{model_name}/best_model.pt'
-        if os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-
-            # Test translations
-            for eng, expected in test_cases:
-                translation = translate_sentence(model, eng, word_eng, word_darija, device)
-                print(f"English: {eng}")
-                print(f"Expected: {expected}")
-                print(f"Got: {translation}\n")
-
-                # Store results
-                results["model_results"][model_name]["translations"].append({
-                    "input": eng,
-                    "expected": expected,
-                    "output": translation
-                })
-
-        else:
-            print(f"No checkpoint found for {model_name}")
-
-        del model
-        torch.cuda.empty_cache()
-
-        # Save results to JSON file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_path = f'evaluation_results_{timestamp}.json'
-        with open(results_path, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-
-        print(f"\nResults saved to {results_path}")
 
 
 if __name__ == "__main__":
-    evaluate_models()
+    main()
+
