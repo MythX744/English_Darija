@@ -74,18 +74,27 @@ class LSTM(nn.Module):
 class Encoder(nn.Module):
     def __init__(self, input_vocab_size, embedding_dim, hidden_size, cell_type=LSTM, num_layers=1):
         super().__init__()
-        # Convert English words to vectors
         self.embedding = nn.Embedding(input_vocab_size, embedding_dim, padding_idx=0)
+        self.cell_type = cell_type
 
-        # Process embedded sequences
         if cell_type == StackedLSTM:
             self.lstm = cell_type(embedding_dim, hidden_size, num_layers)
+            self.num_layers = num_layers  # Add this line
+            self.hidden_size = hidden_size  # Add this line
         else:
             self.lstm = cell_type(embedding_dim, hidden_size, num_layers)
 
     def forward(self, src):
         embedded = self.embedding(src)
-        outputs, states = self.lstm(embedded)
+
+        # Initialize hidden state for StackedLSTM
+        if self.cell_type == StackedLSTM:
+            batch_size = src.size(0)
+            hidden = self.lstm.init_hidden(batch_size)
+            outputs, states = self.lstm(embedded, hidden)
+        else:
+            outputs, states = self.lstm(embedded)
+
         return outputs, states
 
 
@@ -339,7 +348,10 @@ class StackedLSTM(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
 
-    def forward(self, input, hidden):
+    def forward(self, input, hidden=None):
+        # Initialize hidden state if not provided
+        if hidden is None:
+            hidden = self.init_hidden(input.size(0))
         output, hidden = self.lstm(input, hidden)
         return output, hidden
 
