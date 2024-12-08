@@ -1,3 +1,4 @@
+import pandas as pd
 import torch
 import os
 import json
@@ -107,21 +108,22 @@ def evaluate_translation(model, test_cases: List[Tuple[str, str]], word_eng: Dic
     return results
 
 
-def load_model(model_name: str, model_config: Dict, word_eng: Dict[str, int],
-               word_darija: Dict[str, int], device: torch.device) -> TranslationModel:
+def load_model(model_name: str, model_config: Dict, device: torch.device) -> Tuple[TranslationModel, Dict, Dict]:
     """
-    Load a trained model from checkpoint
-
-    Args:
-        model_name: Name of the model architecture
-        model_config: Configuration dictionary for the model
-        word_eng: English vocabulary dictionary
-        word_darija: Darija vocabulary dictionary
-        device: torch device
-
-    Returns:
-        Loaded model
+    Load a trained model and its vocabularies from checkpoint
     """
+    data_prep = PrepareData()
+    df = data_prep.load_and_clean_data(
+        dataset="imomayiz/darija-english",
+        folder="sentences",
+        drop_column="darija_ar",
+        output_csv="darija_english2.csv"
+    )
+    df = pd.read_csv("final_df.csv")
+    df = data_prep.clean_punctuation(df)
+    word_eng, word_darija = data_prep.prepare_vocabularies(df)
+
+    # Create model with correct vocabulary sizes
     model = TranslationModel(
         input_vocab_size=len(word_eng),
         output_vocab_size=len(word_darija),
@@ -131,15 +133,16 @@ def load_model(model_name: str, model_config: Dict, word_eng: Dict[str, int],
         num_layers=model_config.get('num_layers', 1)
     ).to(device)
 
+    # Load model weights
     checkpoint_path = f'checkpoints/{model_name}/best_model.pt'
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         print(f"Loaded checkpoint for {model_name}")
     else:
-        print(f"No checkpoint found for {model_name}")
+        raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}")
 
-    return model
+    return model, word_eng, word_darija
 
 
 def evaluate_models(test_cases: List[Tuple[str, str]] = None):
@@ -193,34 +196,37 @@ def evaluate_models(test_cases: List[Tuple[str, str]] = None):
             ("good morning", "sba7 lkhir")
         ]
 
-    # Create results directory
     results_dir = "evaluation_results"
     os.makedirs(results_dir, exist_ok=True)
 
-    # Evaluate each model
     all_results = {}
     for model_name, config in model_configs.items():
         print(f"\nEvaluating {model_name} model:")
         print("-" * 50)
 
-        # Load model
-        model = load_model(model_name, config, word_eng, word_darija, device)
+        try:
+            # Load model and vocabularies
+            model, word_eng, word_darija = load_model(model_name, config, device)
 
-        # Run evaluation
-        results = evaluate_translation(model, test_cases, word_eng, word_darija, device)
+            # Run evaluation
+            results = evaluate_translation(model, test_cases, word_eng, word_darija, device)
 
-        # Print results
-        for result in results:
-            print(f"Input: {result['input']}")
-            print(f"Expected: {result['expected']}")
-            print(f"Got: {result['got']}")
-            print(f"Word overlap: {result['word_overlap']}\n")
+            # Print results
+            for result in results:
+                print(f"Input: {result['input']}")
+                print(f"Expected: {result['expected']}")
+                print(f"Got: {result['got']}")
+                print(f"Word overlap: {result['word_overlap']}\n")
 
-        all_results[model_name] = results
+            all_results[model_name] = results
 
-        # Clean up
-        del model
-        torch.cuda.empty_cache()
+        except FileNotFoundError as e:
+            print(f"Error loading {model_name}: {str(e)}")
+            continue
+        finally:
+            if 'model' in locals():
+                del model
+                torch.cuda.empty_cache()
 
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
