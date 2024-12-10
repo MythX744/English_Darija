@@ -1,0 +1,22 @@
+{
+  "LSTM": {
+    "average_bleu": "0.0000",
+    "average_word_overlap": "0.00%",
+    "parameter_count": 10241144
+  },
+  "Peehole": {
+    "average_bleu": "0.0000",
+    "average_word_overlap": "0.00%",
+    "parameter_count": 10372728
+  },
+  "WMC": {
+    "average_bleu": "0.0000",
+    "average_word_overlap": "0.00%",
+    "parameter_count": 10372728
+  },
+  "Stacked_LSTM": {
+    "average_bleu": "0.0000",
+    "average_word_overlap": "0.00%",
+    "parameter_count": 10240632
+  }
+}
