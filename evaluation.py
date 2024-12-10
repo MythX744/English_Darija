@@ -6,6 +6,8 @@ from datetime import datetime
 from models import TranslationModel, LSTM, Peehole, WMC, StackedLSTM
 from prepare_data import PrepareData
 from typing import List, Dict, Tuple
+from nltk.translate.bleu_score import sentence_bleu
+import numpy as np
 
 
 def translate_sentence(model, sentence, word_eng, word_darija, device, max_len=15, temperature=0.8):
@@ -18,7 +20,6 @@ def translate_sentence(model, sentence, word_eng, word_darija, device, max_len=1
         if token in ['<START>', '<END>']:
             indices.append(word_eng[token])
         else:
-            # Handle unknown words better by checking subwords or using UNK
             indices.append(word_eng.get(token, word_eng['<UNK>']))
 
     # Pad sequence properly
@@ -37,93 +38,81 @@ def translate_sentence(model, sentence, word_eng, word_darija, device, max_len=1
         if isinstance(model.encoder.lstm, StackedLSTM):
             decoder_states = encoder_states
         else:
-            # For other LSTM types, ensure proper state format
             h_n, c_n = encoder_states
             decoder_states = (h_n, c_n)
 
-        # Initialize decoder input
         decoder_input = torch.tensor([[word_darija['<START>']]], device=device)
 
         for _ in range(max_len):
-            # Get prediction with temperature sampling
             prediction, decoder_states = model.decoder(decoder_input, decoder_states)
-
-            # Apply temperature to logits
             prediction = prediction / temperature
             probs = torch.softmax(prediction, dim=1)
-
-            # Sample from the distribution
             word_idx = torch.multinomial(probs, 1).item()
 
-            # Stop if END token
             if word_idx == word_darija['<END>']:
                 break
 
-            # Skip special tokens
             if word_idx in [word_darija['<PAD>'], word_darija['<UNK>'], word_darija['<START>']]:
                 continue
 
-            # Convert index to word
             word = list(word_darija.keys())[list(word_darija.values()).index(word_idx)]
             translation.append(word)
 
-            # Next input
             decoder_input = torch.tensor([[word_idx]], device=device)
 
     return ' '.join(translation)
 
 
+def calculate_metrics(predicted: str, expected: str) -> Dict[str, float]:
+    """Calculate multiple evaluation metrics for a translation"""
+    # Word overlap
+    expected_words = set(expected.split())
+    translated_words = set(predicted.split())
+    overlap = len(expected_words.intersection(translated_words)) / len(expected_words)
+
+    # BLEU score
+    bleu = sentence_bleu([expected.split()], predicted.split())
+
+    # Length ratio (measure of translation length accuracy)
+    length_ratio = len(predicted.split()) / len(expected.split())
+
+    return {
+        'word_overlap': overlap,
+        'bleu_score': bleu,
+        'length_ratio': length_ratio
+    }
+
+
 def evaluate_translation(model, test_cases: List[Tuple[str, str]], word_eng: Dict[str, int],
                          word_darija: Dict[str, int], device: torch.device) -> List[Dict]:
-    """
-    Evaluate translation quality for a set of test cases
-
-    Args:
-        model: The translation model
-        test_cases: List of (input_text, expected_translation) tuples
-        word_eng: English vocabulary dictionary
-        word_darija: Darija vocabulary dictionary
-        device: torch device
-
-    Returns:
-        List of dictionaries containing results for each test case
-    """
+    """Evaluate translation quality for a set of test cases"""
     results = []
 
     for eng, expected in test_cases:
         translation = translate_sentence(model, eng, word_eng, word_darija, device)
-
-        # Calculate simple word overlap score
-        expected_words = set(expected.split())
-        translated_words = set(translation.split())
-        overlap = len(expected_words.intersection(translated_words)) / len(expected_words)
+        metrics = calculate_metrics(translation, expected)
 
         results.append({
             'input': eng,
             'expected': expected,
             'got': translation,
-            'word_overlap': f"{overlap:.2%}"
+            'metrics': {
+                'word_overlap': f"{metrics['word_overlap']:.2%}",
+                'bleu_score': f"{metrics['bleu_score']:.4f}",
+                'length_ratio': f"{metrics['length_ratio']:.2f}"
+            }
         })
 
     return results
 
 
 def load_model(model_name: str, model_config: Dict, device: torch.device) -> Tuple[TranslationModel, Dict, Dict]:
-    """
-    Load a trained model and its vocabularies from checkpoint
-    """
+    """Load a trained model and its vocabularies from checkpoint"""
     data_prep = PrepareData()
-    df = data_prep.load_and_clean_data(
-        dataset="imomayiz/darija-english",
-        folder="sentences",
-        drop_column="darija_ar",
-        output_csv="darija_english2.csv"
-    )
     df = pd.read_csv("final_df.csv")
     df = data_prep.clean_punctuation(df)
     word_eng, word_darija = data_prep.prepare_vocabularies(df)
 
-    # Create model with correct vocabulary sizes
     model = TranslationModel(
         input_vocab_size=len(word_eng),
         output_vocab_size=len(word_darija),
@@ -133,7 +122,6 @@ def load_model(model_name: str, model_config: Dict, device: torch.device) -> Tup
         num_layers=model_config.get('num_layers', 1)
     ).to(device)
 
-    # Load model weights
     checkpoint_path = f'checkpoints/{model_name}/best_model.pt'
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -149,17 +137,6 @@ def evaluate_models(test_cases: List[Tuple[str, str]] = None):
     """Main evaluation function"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-
-    # Data preparation
-    data_prep = PrepareData()
-    df = data_prep.load_and_clean_data(
-        dataset="imomayiz/darija-english",
-        folder="sentences",
-        drop_column="darija_ar",
-        output_csv="darija_english.csv"
-    )
-    df = data_prep.clean_punctuation(df)
-    word_eng, word_darija = data_prep.prepare_vocabularies(df)
 
     # Model configurations
     embedding_dim = 128
@@ -187,7 +164,6 @@ def evaluate_models(test_cases: List[Tuple[str, str]] = None):
         }
     }
 
-    # Default test cases if none provided
     if test_cases is None:
         test_cases = [
             ("They're hiding something, I'm sure", "homa mkhbbyin chi haja, ana mti99en"),
@@ -200,41 +176,61 @@ def evaluate_models(test_cases: List[Tuple[str, str]] = None):
     os.makedirs(results_dir, exist_ok=True)
 
     all_results = {}
+    model_summaries = {}
+
     for model_name, config in model_configs.items():
         print(f"\nEvaluating {model_name} model:")
         print("-" * 50)
 
         try:
-            # Load model and vocabularies
             model, word_eng, word_darija = load_model(model_name, config, device)
-
-            # Run evaluation
             results = evaluate_translation(model, test_cases, word_eng, word_darija, device)
+
+            # Calculate average metrics
+            avg_bleu = np.mean([float(r['metrics']['bleu_score']) for r in results])
+            avg_overlap = np.mean([float(r['metrics']['word_overlap'].strip('%')) / 100 for r in results])
+
+            model_summaries[model_name] = {
+                'average_bleu': f"{avg_bleu:.4f}",
+                'average_word_overlap': f"{avg_overlap:.2%}",
+                'parameter_count': sum(p.numel() for p in model.parameters())
+            }
 
             # Print results
             for result in results:
                 print(f"Input: {result['input']}")
                 print(f"Expected: {result['expected']}")
                 print(f"Got: {result['got']}")
-                print(f"Word overlap: {result['word_overlap']}\n")
+                print("Metrics:")
+                for metric, value in result['metrics'].items():
+                    print(f"  {metric}: {value}")
+                print()
 
             all_results[model_name] = results
 
-        except FileNotFoundError as e:
-            print(f"Error loading {model_name}: {str(e)}")
+        except Exception as e:
+            print(f"Error evaluating {model_name}: {str(e)}")
             continue
         finally:
             if 'model' in locals():
                 del model
                 torch.cuda.empty_cache()
 
-    # Save results
+    # Save detailed results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = os.path.join(results_dir, f"evaluation_results_{timestamp}.json")
+
+    # Save detailed results
+    results_file = os.path.join(results_dir, f"detailed_results_{timestamp}.json")
     with open(results_file, 'w', encoding='utf-8') as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
 
-    print(f"\nResults saved to {results_file}")
+    # Save model summaries
+    summary_file = os.path.join(results_dir, f"model_summaries_{timestamp}.json")
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        json.dump(model_summaries, f, indent=2, ensure_ascii=False)
+
+    print(f"\nDetailed results saved to {results_file}")
+    print(f"Model summaries saved to {summary_file}")
 
 
 if __name__ == "__main__":
